@@ -29,6 +29,10 @@ defmodule Gmail.OAuth2 do
     :os.system_time(:seconds) >= expires_at
   end
 
+  def watch_expired?(%{watch_exp: watch_expires_at}) do
+    :os.system_time(:seconds) >= watch_expires_at
+  end
+
   @spec refresh_access_token(String.t) :: {String.t, number}
   def refresh_access_token(refresh_token) when is_binary(refresh_token) do
     {:ok, access_token, expires_at} = do_refresh_access_token(refresh_token)

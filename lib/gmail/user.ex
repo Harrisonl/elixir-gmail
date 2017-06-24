@@ -18,8 +18,9 @@ defmodule Gmail.User do
   @doc false
   def init({user_id, refresh_token}) do
     {access_token, expires_at} = OAuth2.refresh_access_token(refresh_token)
+    {:ok, %{"expiration" => exp}} =  execute_watch(user_id, %{access_token: access_token})
     state = Map.new(user_id: user_id, refresh_token: refresh_token,
-      access_token: access_token, expires_at: expires_at)
+      access_token: access_token, expires_at: expires_at, watch_exp: String.to_integer(exp))
     {:ok, state}
   end
 
@@ -28,9 +29,21 @@ defmodule Gmail.User do
     {:noreply, %{state | access_token: access_token, expires_at: expires_at}}
   end
 
+  def handle_cast({:update_watch, exp}, state) do
+    {:noreply, :ok, %{state | watch_exp: exp}}
+  end
+
+
   @doc false
   def handle_cast(:stop, state) do
     {:stop, :normal, state}
+  end
+
+  def handle_call({:watch}, _from, %{user_id: user_id} = state) do
+    {:ok, %{"expiration" => exp}} = 
+      user_id
+      |> execute_watch(state)
+    {:reply, {:ok, exp}, %{state | watch_exp: String.to_integer(exp)}}
   end
 
   #  Threads {{{ #
@@ -583,6 +596,19 @@ defmodule Gmail.User do
     call(user_id, {:label, {:patch, label}}, :infinity)
   end
 
+  @doc """
+  Subscribes a user to the Pub/Sub Server
+  """
+  def watch(user_id) do
+    call(user_id, {:watch}, :infinity)
+  end
+
+  def execute_watch(user_id, state) do
+    payload = %{ topicName: "projects/greg-168804/topics/gmail" }
+    {:post, "https://www.googleapis.com/gmail/v1/users/me/watch", "", payload}
+    |> HTTP.execute(state)
+  end
+
   #  }}} Labels #
 
   #  Drafts {{{ #
@@ -640,6 +666,11 @@ defmodule Gmail.User do
   @spec http_execute({atom, String.t, String.t}, map) :: {atom, map} | {atom, String.t}
   @spec http_execute({atom, String.t, String.t, map}, map) :: {atom, map} | {atom, String.t}
   def http_execute(action, %{refresh_token: refresh_token, user_id: user_id} = state) do
+    state = validate_sessions(state)
+    HTTP.execute(action, state)
+  end
+
+  def validate_sessions(%{refresh_token: refresh_token, user_id: user_id} = state) do
     state = if OAuth2.access_token_expired?(state) do
       Logger.debug "Refreshing access token for #{user_id}"
       {access_token, expires_at} = OAuth2.refresh_access_token(refresh_token)
@@ -648,7 +679,15 @@ defmodule Gmail.User do
     else
       state
     end
-    HTTP.execute(action, state)
+
+    state = if OAuth2.watch_expired?(state) do
+      Logger.debug "Refreshing access token for #{user_id}"
+      {:ok, %{"expiration" => exp}} =  execute_watch(user_id, state)
+      GenServer.cast(String.to_atom(user_id), {:update_watch, exp})
+      %{state | access_token: access_token}
+    else
+      state
+    end
   end
 
   #  }}} Client API #
